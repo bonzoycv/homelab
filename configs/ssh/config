@@ -1,0 +1,29 @@
+Host noplaygames
+    HostName 158.101.196.133
+    User ubuntu
+    IdentityFile ~/.ssh/noplaygames.key
+    IdentitiesOnly yes
+
+Host foundry
+    HostName 144.21.33.53
+    User ubuntu
+    IdentityFile ~/.ssh/foundryvtt.key
+    IdentitiesOnly yes
+
+Host homelab
+    HostName 192.168.1.108
+    User bonzoycv
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+
+Host proxmox
+    HostName 192.168.1.105
+    User bonzoycv
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+
+Host proxmox-root
+    HostName 192.168.1.105
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes

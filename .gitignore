@@ -1,0 +1,22 @@
+# SSH Keys
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+
+known_hosts
+known_hosts.old
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
