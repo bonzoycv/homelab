@@ -40,3 +40,15 @@ Documentación y configuraciones de mi laboratorio personal.
 -  Snapshots (pendiente)
 -  Docker (pendiente)
 -  Jellyfin (pendiente)
+
+
+## Principios del Proyecto
+
+- Documentar cada cambio importante.
+- Comprender una tecnología antes de implementar la siguiente.
+- Priorizar la seguridad desde el inicio.
+- Mantener la infraestructura reproducible.
+- Automatizar tareas repetitivas cuando aporte valor.
+- Realizar copias de seguridad antes de cambios importantes.
+- Priorizar soluciones Open Source.
+- Construir sobre bases sólidas antes de añadir nuevos servicios.
