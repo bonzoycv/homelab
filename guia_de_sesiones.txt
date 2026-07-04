@@ -1,0 +1,50 @@
+Sesión 3
+────────────
+✔ Guest Agent
+✔ IP fija
+✔ Snapshot
+✔ Backups
+
+↓
+
+Sesión 4
+────────────
+✔ Docker
+✔ Docker Compose
+✔ Documentación
+
+↓
+
+Sesión 5
+────────────
+✔ Pi-hole
+
+↓
+
+Sesión 6
+────────────
+✔ Jellyfin
+
+↓
+
+Sesión 7
+────────────
+✔ Reverse Proxy
+
+↓
+
+Sesión 8
+────────────
+✔ Tailscale
+
+↓
+
+Sesión 9
+────────────
+✔ Monitorización
+
+↓
+
+Sesión 10
+────────────
+✔ Automatización
