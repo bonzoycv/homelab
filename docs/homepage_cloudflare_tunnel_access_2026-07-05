@@ -1,0 +1,392 @@
+# Homepage + Cloudflare Tunnel + Access
+
+Fecha: 2026-07-05
+
+## Contexto
+
+Con Pi-hole ya migrado y funcionando, se decidio crear un dashboard central
+para listar todos los servicios del homelab, y exponer los paneles de
+administracion (Pi-hole y Proxmox) para poder acceder desde fuera de la red
+local (por ejemplo, desde el trabajo), aprovechando el Cloudflare Tunnel
+que ya corria para Jellyfin.
+
+Objetivo:
+- Un dashboard en `home.bonzoycv.org` con todos los servicios listados.
+- Acceso remoto a Pi-hole (`pihole.bonzoycv.org`) y Proxmox
+  (`proxmox.bonzoycv.org`), protegidos con autenticacion adicional.
+
+## Arquitectura final
+
+```
+Internet
+  |
+  v
+Cloudflare (DNS + Access)
+  |
+  v
+Cloudflared (tunnel "bonzoserver", corre en la VM ubuntu-server)
+  |
+  +--> jellyfin.bonzoycv.org  -> http://caddy:80        -> Jellyfin
+  +--> home.bonzoycv.org      -> http://192.168.1.108:80  -> Caddy -> Homepage
+  +--> pihole.bonzoycv.org    -> http://192.168.1.108:8080 -> Pi-hole (WebUI)
+  +--> proxmox.bonzoycv.org   -> https://192.168.1.105:8006 -> Proxmox (No TLS Verify)
+```
+
+Pi-hole y Proxmox quedan detras de una capa adicional de autenticacion
+(Cloudflare Access) antes de llegar siquiera al login propio de cada
+servicio.
+
+## Paso 1: Desplegar Homepage
+
+Carpetas:
+
+```bash
+mkdir -p /home/bonzoycv/home-server/compose/home
+mkdir -p /home/bonzoycv/home-server/data/home/config
+```
+
+`compose/home/.env`:
+```
+TZ=Europe/Belgrade
+```
+
+`compose/home/docker-compose.yml`:
+```yaml
+services:
+  homepage:
+    container_name: homepage
+    image: ghcr.io/gethomepage/homepage:latest
+    network_mode: host
+    environment:
+      TZ: '${TZ}'
+      HOMEPAGE_ALLOWED_HOSTS: 'home.bonzoycv.org,192.168.1.108:3000'
+    volumes:
+      - '../../data/home/config:/app/config'
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+    restart: unless-stopped
+```
+
+Notas:
+- `network_mode: host` para consistencia con el resto de servicios (Pi-hole
+  usa el mismo patron).
+- `HOMEPAGE_ALLOWED_HOSTS` es obligatorio en versiones recientes de
+  Homepage; sin esta variable, se rechaza cualquier acceso que no sea vía
+  localhost.
+- El bind mount de `docker.sock` es de solo lectura y permite a Homepage
+  detectar contenedores automaticamente y mostrar su estado, sin poder
+  controlarlos.
+
+Error encontrado: al crear por error la carpeta `config/` dentro de
+`compose/home/` en vez de `data/home/`, el volumen no encontraba los
+archivos reales y Homepage cargaba su configuracion de ejemplo por
+defecto. Se corrigio moviendo la carpeta a la ruta correcta segun la
+convencion establecida (`compose/` para definicion, `data/` para
+persistencia).
+
+## Paso 2: Configuracion de servicios
+
+`data/home/config/services.yaml`:
+
+```yaml
+- Infraestructura:
+    - Proxmox:
+        href: https://192.168.1.105:8006
+        description: Hypervisor - gestion de VMs
+        icon: proxmox.png
+        widget:
+          type: proxmox
+          url: https://192.168.1.105:8006
+          username: bonzoycv@pam!homepage
+          password: TU_TOKEN_UUID_AQUI
+          node: proxmox
+          verifySSL: false
+
+- Media:
+    - Jellyfin:
+        href: https://jellyfin.bonzoycv.org
+        description: Streaming de peliculas y series
+        icon: jellyfin.png
+
+- Juegos:
+    - FoundryVTT:
+        href: https://foundryvtt.bonzoycv.org
+        description: Servidor de VTT (Oracle Cloud)
+        icon: foundry-vtt.png
+
+- Redes:
+    - Pi-hole:
+        href: https://pihole.bonzoycv.org/admin
+        description: Bloqueo de anuncios y DNS local
+        icon: pi-hole.png
+```
+
+`data/home/config/settings.yaml`:
+```yaml
+title: Homelab bonzoycv
+theme: dark
+color: slate
+```
+
+`data/home/config/bookmarks.yaml`:
+```yaml
+[]
+```
+
+### Nota importante sobre los `href`
+
+Todos los enlaces de servicios deben usar el dominio publico
+(`https://algo.bonzoycv.org`), nunca la IP local. Si se usa la IP local,
+el enlace funciona solo dentro de la red domestica; al entrar a Homepage
+desde fuera (por ejemplo, desde el trabajo, vía `home.bonzoycv.org`), los
+enlaces con IP local quedan inalcanzables para el dispositivo remoto. Esta
+convencion aplica para cualquier servicio nuevo que se agregue (Immich,
+etc.).
+
+Nota: `href` y `widget.url` de Proxmox usan la IP local (`192.168.1.105`)
+a proposito. El widget lo resuelve el propio contenedor de Homepage, que
+vive dentro de la red local, asi que no necesita salir a internet; el
+`href` (el link clicable) apunta a la IP local porque Proxmox no se
+expone directamente por IP desde afuera, solo vía el dominio del tunel.
+Si se navega a Proxmox desde fuera de casa, se debe usar
+`proxmox.bonzoycv.org`, no el link del widget.
+
+## Paso 3: Widget de Proxmox con estado en vivo
+
+### Crear el token API en Proxmox
+
+```
+Datacenter -> Permissions -> API Tokens -> Add
+```
+
+- User: `bonzoycv@pam`
+- Token ID: `homepage`
+- Privilege Separation: queda activado por defecto (esto es importante,
+  ver mas abajo)
+
+Se genera un Token Secret (UUID) que solo se muestra una vez.
+
+### Formato correcto en Homepage
+
+Errores encontrados durante la configuracion:
+
+1. Primer intento, formato incorrecto:
+   ```yaml
+   username: bonzoycv@pam
+   password: bonzoycv@pam!homepage=UUID_DEL_TOKEN
+   ```
+   Resultado: error HTTP 401 en los logs (`credentialedProxyHandler HTTP
+   Error 401`).
+
+2. Segundo intento, se agrego un campo `tokenId` separado que no existe
+   en el esquema de Homepage:
+   ```yaml
+   username: bonzoycv@pam
+   password: UUID_DEL_TOKEN
+   tokenId: homepage
+   ```
+   Tambien fallo con 401.
+
+3. Formato correcto:
+   ```yaml
+   username: bonzoycv@pam!homepage
+   password: UUID_DEL_TOKEN
+   ```
+   El campo `username` debe llevar el Token ID completo (usuario + `!` +
+   nombre del token), y `password` solo el UUID, sin ningun prefijo.
+
+### Permisos del token
+
+Con el token creado con "Privilege Separation" activado (comportamiento
+por defecto), el token **no hereda** los permisos del usuario `bonzoycv@pam`
+aunque este tenga rol Administrator sobre `/`. Se debe crear una entrada
+de permisos especifica para el token:
+
+```
+Datacenter -> Permissions -> Add -> API Token Permission
+```
+
+- Path: `/`
+- API Token: `bonzoycv@pam!homepage`
+- Role: `PVEAuditor` (solo lectura, suficiente para que Homepage muestre
+  estado sin poder modificar nada)
+- Propagate: activado
+
+Verificacion util antes de dar por buena la configuracion, probando el
+token directamente contra la API:
+
+```bash
+curl -k -v https://192.168.1.105:8006/api2/json/cluster/resources \
+  -H 'Authorization: PVEAPIToken=bonzoycv@pam!homepage=UUID_DEL_TOKEN'
+```
+
+(usar comillas simples, ya que el caracter `!` dentro de comillas dobles
+activa la expansion de historial de Bash y produce el error
+`event not found`)
+
+Con permisos correctos, la respuesta trae el detalle de VMs, LXC, nodos,
+etc. Sin permisos, solo devuelve el nodo (`type: node`), lo cual se
+traduce en el widget mostrando `0/0 VMs` y `NaN%` en CPU/memoria.
+
+## Paso 4: Corregir el Caddyfile (catch-all)
+
+El Caddyfile original tenia un bloque sin hostname especifico:
+
+```caddyfile
+{
+    auto_https off
+}
+
+:80 {
+    encode gzip
+    reverse_proxy jellyfin:8096
+}
+```
+
+Este bloque `:80` sin hostname actua como catch-all: responde a
+**cualquier** peticion en el puerto 80 sin importar el header `Host`,
+capturando todo el trafico antes de que otros bloques (como el de
+`home.bonzoycv.org`) puedan procesarlo. Se detecto porque
+`curl -H "Host: home.bonzoycv.org" http://localhost:80` devolvia la
+respuesta de Jellyfin en vez de la de Homepage.
+
+Correccion, dando hostname explicito a cada bloque:
+
+```caddyfile
+{
+    auto_https off
+}
+
+jellyfin.bonzoycv.org:80 {
+    encode gzip
+    reverse_proxy jellyfin:8096
+}
+
+home.bonzoycv.org:80 {
+    encode gzip
+    reverse_proxy 192.168.1.108:3000
+}
+```
+
+Recarga sin downtime:
+```bash
+docker exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+## Paso 5: Publicar rutas en Cloudflare Tunnel
+
+En `Networks -> Connectors -> bonzoserver -> Published application routes`,
+se agregaron:
+
+| Hostname | Servicio | Notas |
+|---|---|---|
+| `home.bonzoycv.org` | `http://192.168.1.108:80` | vía Caddy |
+| `pihole.bonzoycv.org` | `http://192.168.1.108:8080` | directo a Pi-hole, sin TLS |
+| `proxmox.bonzoycv.org` | `https://192.168.1.105:8006` | con "No TLS Verify" activado |
+
+Para Proxmox, en "Origin request and connection settings" -> TLS, se
+activo **No TLS Verify**, necesario porque Proxmox usa un certificado
+autofirmado (no emitido por una autoridad reconocida) y sin esta opcion
+Cloudflare rechaza la conexion al origen.
+
+Nota sobre protocolos: Pi-hole sirve su WebUI en HTTP plano porque se
+configuro asi en su `docker-compose.yml` (`WEB_PORT: '8080'` con la
+modalidad "o" = HTTP sin cifrar). Proxmox, en cambio, siempre fuerza TLS
+en el puerto 8006, sin opcion de modo HTTP plano. El tramo sin cifrar de
+Pi-hole (entre Cloudflared y el contenedor) ocurre dentro de la propia
+red local, no expuesto a internet; el tramo publico (visitante ->
+Cloudflare) siempre va cifrado en ambos casos.
+
+## Paso 6: Cloudflare Access (autenticacion adicional)
+
+Se creo una unica Application en Zero Trust cubriendo ambos destinos
+sensibles:
+
+```
+Access controls -> Applications -> Add an application -> Self-hosted
+```
+
+- Name: `pihole` (el nombre es solo una etiqueta, la app cubre ambos
+  destinos)
+- Destinations: `pihole.bonzoycv.org` y `proxmox.bonzoycv.org`
+- Session Duration: 12 horas
+- Identity Provider: `onetimepin` (codigo de un solo uso enviado por
+  correo)
+- Policy: "Solo yo" -> Action: Allow -> Include: Emails -> correo propio
+
+Con esto, al visitar cualquiera de los dos dominios desde fuera, Cloudflare
+pide primero el correo y el codigo de verificacion, y solo despues de
+pasar esa capa, se llega al login real de cada servicio (Pi-hole o
+Proxmox).
+
+## Paso 7: Correccion del error 403 en Pi-hole
+
+Al probar `https://pihole.bonzoycv.org` tras pasar el login de Cloudflare
+Access, Pi-hole devolvia:
+
+```
+403 Oops! Access denied.
+You don't have permission to access this URL.
+```
+
+Causa: Pi-hole v6 valida el header `Host` de la peticion contra un
+dominio configurado (`webserver.domain` en `pihole.toml`), que por
+defecto es `pi.hole`. Al llegar la peticion con
+`Host: pihole.bonzoycv.org`, no coincidia y se rechazaba.
+
+Correccion:
+```bash
+docker exec -it pihole pihole-FTL --config webserver.domain "pihole.bonzoycv.org"
+docker restart pihole
+```
+
+Verificacion de que el cambio se aplico, revisando el archivo de
+configuracion:
+```bash
+grep -A 3 "\[webserver\]" /home/bonzoycv/home-server/data/pihole/etc-pihole/pihole.toml
+```
+
+Debe verse:
+```
+domain = "pihole.bonzoycv.org" ### CHANGED, default = "pi.hole"
+```
+
+### Aclaracion adicional: ruta raiz vs `/admin`
+
+Incluso con el dominio corregido, entrar a `https://pihole.bonzoycv.org`
+(raiz, sin ruta) seguia devolviendo 403. La URL correcta de acceso a la
+interfaz es:
+
+```
+https://pihole.bonzoycv.org/admin
+```
+
+Pi-hole no redirige automaticamente la raiz del dominio configurado a
+`/admin` en todos los casos vía proxy externo, por lo que hay que
+especificar la ruta completa.
+
+## Verificacion final
+
+Desde un dispositivo movil, con WiFi apagado (fuera de la red local):
+
+1. `https://home.bonzoycv.org` -> carga Homepage directamente (sin Access,
+   no se protegio este dominio con autenticacion adicional).
+2. `https://pihole.bonzoycv.org/admin` -> pide correo + codigo de
+   Cloudflare Access, luego muestra el login de Pi-hole.
+3. `https://proxmox.bonzoycv.org` -> pide correo + codigo de Cloudflare
+   Access, luego muestra el login de Proxmox VE.
+
+Los enlaces dentro de Homepage hacia Pi-hole se corrigieron para usar el
+dominio publico en vez de la IP local, de forma que funcionen igual
+estando dentro o fuera de la red domestica.
+
+## Pendientes / decisiones para revisar despues
+
+- Evaluar si conviene tambien proteger `home.bonzoycv.org` con Cloudflare
+  Access, ya que aunque no permite modificar nada, expone nombres de
+  servicios internos a quien encuentre el subdominio.
+- Cuando se despliegue Immich, agregar su entrada en `services.yaml` con
+  el dominio publico correspondiente y su propia ruta en el Cloudflare
+  Tunnel.
+- Revisar si activar verificacion en dos pasos (2FA) en la cuenta de
+  Cloudflare, dado que ahora es la puerta de entrada a herramientas con
+  control total de la infraestructura.
